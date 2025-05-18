@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fluid Dynamics Visualization</title>
+    <script src="https://cdn.jsdelivr.net/npm/p5@1.8.0/lib/p5.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        #canvas-container {
+            width: 100%;
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: center;
+            position: relative;
+        }
+        #info {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: rgba(255, 255, 255, 0.5);
+            font-family: 'Arial', sans-serif;
+            font-size: 12px;
+            pointer-events: none;
+        }
+    </style>
+
+<base target="_self">
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="info">Click and drag to interact • Press R to reset</div>
+    <script>
+        const fluidSim = (p) => {
+            // Fluid simulation parameters
+            let N = 64;
+            let size;
+            let dt = 0.1;
+            let visc = 0.0001;
+            let diff = 0.0001;
+            let force = 5;
+            let source = 100;
+            
+            // Fluid simulation arrays
+            let u = [], v = [], u_prev = [], v_prev = [];
+            let dens = [], dens_prev = [];
+            
+            // Visualization parameters
+            let colorMode = 0;
+            let showVectors = false;
+            let showDensity = true;
+            let particleCount = 500;
+            let particles = [];
+            let colorPalettes = [
+                [p.color(10, 10, 30), p.color(100, 200, 255), p.color(255, 100, 50)],
+                [p.color(20, 5, 30), p.color(150, 50, 150), p.color(250, 200, 100)],
+                [p.color(5, 5, 15), p.color(50, 150, 200), p.color(200, 50, 100)]
+            ];
+            let currentPalette = 0;
+            
+            p.setup = () => {
+                size = Math.min(p.windowWidth, p.windowHeight) * 0.8;
+                size = Math.min(size, 1000);
+                let canvas = p.createCanvas(size, size, p.WEBGL);
+                canvas.parent('canvas-container');
+                
+                // Initialize fluid simulation arrays
+                for (let i = 0; i < N + 2; i++) {
+                    u[i] = new Array(N + 2).fill(0);
+                    v[i] = new Array(N + 2).fill(0);
+                    u_prev[i] = new Array(N + 2).fill(0);
+                    v_prev[i] = new Array(N + 2).fill(0);
+                    dens[i] = new Array(N + 2).fill(0);
+                    dens_prev[i] = new Array(N + 2).fill(0);
+                }
+                
+                // Initialize particles
+                for (let i = 0; i < particleCount; i++) {
+                    particles.push({
+                        x: p.random(N),
+                        y: p.random(N),
+                        vx: 0,
+                        vy: 0,
+                        life: p.random(100, 200),
+                        maxLife: p.random(100, 200),
+                        size: p.random(1, 3)
+                    });
+                }
+                
+                p.colorMode(p.HSB, 360, 100, 100, 1);
+            };
+            
+            p.draw = () => {
+                p.background(0);
+                p.translate(-p.width/2, -p.height/2);
+                
+                // Update fluid simulation
+                velocityStep();
+                densityStep();
+                
+                // Visualize fluid
+                if (showDensity) visualizeDensity();
+                if (showVectors) visualizeVectors();
+                
+                // Update and draw particles
+                updateParticles();
+                drawParticles();
+                
+                // Add density and velocity from mouse
+                addMouseForce();
+            };
+            
+            // Fluid simulation functions
+            function velocityStep() {
+                addSource(u, u_prev);
+                addSource(v, v_prev);
+                diffuse(1, u_prev, u, visc);
+                diffuse(2, v_prev, v, visc);
+                project(u_prev, v_prev, u, v);
+                advect(1, u, u_prev, u_prev, v_prev);
+                advect(2, v, v_prev, u_prev, v_prev);
+                project(u, v, u_prev, v_prev);
+            }
+            
+            function densityStep() {
+                addSource(dens, dens_prev);
+                diffuse(0, dens_prev, dens, diff);
+                advect(0, dens, dens_prev, u, v);
+            }
+            
+            function addSource(x, s) {
+                for (let i = 0; i < N + 2; i++) {
+                    for (let j = 0; j < N + 2; j++) {
+                        x[i][j] += dt * s[i][j];
+                    }
+                }
+            }
+            
+            function diffuse(b, x, x0, diff) {
+                let a = dt * diff * N * N;
+                for (let k = 0; k < 20; k++) {
+                    for (let i = 1; i <= N; i++) {
+                        for (let j = 1; j <= N; j++) {
+                            x[i][j] = (x0[i][j] + a * (x[i-1][j] + x[i+1][j] + x[i][j-1] + x[i][j+1])) / (1 + 4 * a);
+                        }
+                    }
+                    setBoundary(b, x);
+                }
+            }
+            
+            function advect(b, d, d0, u, v) {
+                let dt0 = dt * N;
+                for (let i = 1; i <= N; i++) {
+                    for (let j = 1; j <= N; j++) {
+                        let x = i - dt0 * u[i][j];
+                        let y = j - dt0 * v[i][j];
+                        
+                        x = p.constrain(x, 0.5, N + 0.5);
+                        y = p.constrain(y, 0.5, N + 0.5);
+                        
+                        let i0 = p.floor(x);
+                        let i1 = i0 + 1;
+                        let j0 = p.floor(y);
+                        let j1 = j0 + 1;
+                        
+                        let s1 = x - i0;
+                        let s0 = 1 - s1;
+                        let t1 = y - j0;
+                        let t0 = 1 - t1;
+                        
+                        d[i][j] = s0 * (t0 * d0[i0][j0] + t1 * d0[i0][j1]) +
+                                  s1 * (t0 * d0[i1][j0] + t1 * d0[i1][j1]);
+                    }
+                }
+                setBoundary(b, d);
+            }
+            
+            function project(u, v, p, div) {
+                let h = 1.0 / N;
+                for (let i = 1; i <= N; i++) {
+                    for (let j = 1; j <= N; j++) {
+                        div[i][j] = -0.5 * h * (u[i+1][j] - u[i-1][j] + v[i][j+1] - v[i][j-1]);
+                        p[i][j] = 0;
+                    }
+                }
+                setBoundary(0, div);
+                setBoundary(0, p);
+                
+                for (let k = 0; k < 20; k++) {
+                    for (let i = 1; i <= N; i++) {
+                        for (let j = 1; j <= N; j++) {
+                            p[i][j] = (div[i][j] + p[i-1][j] + p[i+1][j] + p[i][j-1] + p[i][j+1]) / 4;
+                        }
+                    }
+                    setBoundary(0, p);
+                }
+                
+                for (let i = 1; i <= N; i++) {
+                    for (let j = 1; j <= N; j++) {
+                        u[i][j] -= 0.5 * (p[i+1][j] - p[i-1][j]) / h;
+                        v[i][j] -= 0.5 * (p[i][j+1] - p[i][j-1]) / h;
+                    }
+                }
+                setBoundary(1, u);
+                setBoundary(2, v);
+            }
+            
+            function setBoundary(b, x) {
+                for (let i = 1; i <= N; i++) {
+                    x[0][i] = b === 1 ? -x[1][i] : x[1][i];
+                    x[N+1][i] = b === 1 ? -x[N][i] : x[N][i];
+                    x[i][0] = b === 2 ? -x[i][1] : x[i][1];
+                    x[i][N+1] = b === 2 ? -x[i][N] : x[i][N];
+                }
+                
+                x[0][0] = 0.5 * (x[1][0] + x[0][1]);
+                x[0][N+1] = 0.5 * (x[1][N+1] + x[0][N]);
+                x[N+1][0] = 0.5 * (x[N][0] + x[N+1][1]);
+                x[N+1][N+1] = 0.5 * (x[N][N+1] + x[N+1][N]);
+            }
+            
+            // Visualization functions
+            function visualizeDensity() {
+                let cellSize = p.width / N;
+                p.noStroke();
+                
+                for (let i = 1; i <= N; i++) {
+                    for (let j = 1; j <= N; j++) {
+                        let d = dens[i][j];
+                        if (d > 0.01) {
+                            let col;
+                            if (colorMode === 0) {
+                                // Velocity-based coloring
+                                let vel = p.sqrt(u[i][j] * u[i][j] + v[i][j] * v[i][j]);
+                                let hue = p.map(vel, 0, 0.5, 200, 360) % 360;
+                                let sat = p.map(d, 0, 100, 50, 100);
+                                let bri = p.map(d, 0, 100, 20, 100);
+                                col = p.color(hue, sat, bri, p.map(d, 0, 100, 0.1, 0.5));
+                            } else {
+                                // Palette-based coloring
+                                let t = p.map(d, 0, 100, 0, 1);
+                                if (t < 0.5) {
+                                    col = p.lerpColor(colorPalettes[currentPalette][0], colorPalettes[currentPalette][1], t * 2);
+                                } else {
+                                    col = p.lerpColor(colorPalettes[currentPalette][1], colorPalettes[currentPalette][2], (t - 0.5) * 2);
+                                }
+                                col.setAlpha(p.map(d, 0, 100, 10, 200));
+                            }
+                            
+                            p.fill(col);
+                            p.rect((i-1) * cellSize, (j-1) * cellSize, cellSize, cellSize);
+                        }
+                    }
+                }
+            }
+            
+            function visualizeVectors() {
+                let cellSize = p.width / N;
+                p.stroke(255, 100);
+                p.strokeWeight(1);
+                
+                for (let i = 1; i <= N; i += 5) {
+                    for (let j = 1; j <= N; j += 5) {
+                        let x = (i-0.5) * cellSize;
+                        let y = (j-0.5) * cellSize;
+                        let len = p.sqrt(u[i][j] * u[i][j] + v[i][j] * v[i][j]);
+                        let angle = p.atan2(v[i][j], u[i][j]);
+                        
+                        p.push();
+                        p.translate(x, y);
+                        p.rotate(angle);
+                        p.line(0, 0, len * cellSize * 10, 0);
+                        p.pop();
+                    }
+                }
+            }
+            
+            function updateParticles() {
+                for (let part of particles) {
+                    // Update position based on velocity field
+                    let i = p.constrain(p.floor(part.x), 1, N);
+                    let j = p.constrain(p.floor(part.y), 1, N);
+                    
+                    part.vx = u[i][j] * 2;
+                    part.vy = v[i][j] * 2;
+                    
+                    part.x += part.vx;
+                    part.y += part.vy;
+                    part.life--;
+                    
+                    // Wrap around or respawn particles
+                    if (part.x < 0 || part.x > N || part.y < 0 || part.y > N || part.life <= 0) {
+                        part.x = p.random(N);
+                        part.y = p.random(N);
+                        part.life = part.maxLife;
+                    }
+                }
+            }
+            
+            function drawParticles() {
+                let cellSize = p.width / N;
+                p.noStroke();
+                
+                for (let part of particles) {
+                    let alpha = p.map(part.life, 0, part.maxLife, 0, 255);
+                    let speed = p.sqrt(part.vx * part.vx + part.vy * part.vy);
+                    let hue = (p.frameCount * 0.5 + speed * 100) % 360;
+                    
+                    p.fill(hue, 80, 90, alpha / 255);
+                    p.ellipse(part.x * cellSize, part.y * cellSize, part.size * speed * 5, part.size * speed * 5);
+                }
+            }
+            
+            // Interaction functions
+            function addMouseForce() {
+                if (p.mouseIsPressed && p.mouseX > 0 && p.mouseX < p.width && p.mouseY > 0 && p.mouseY < p.height) {
+                    let i = p.floor(p.mouseX / p.width * N) + 1;
+                    let j = p.floor(p.mouseY / p.height * N) + 1;
+                    
+                    i = p.constrain(i, 1, N);
+                    j = p.constrain(j, 1, N);
+                    
+                    u[i][j] = force * (p.mouseX - p.pmouseX);
+                    v[i][j] = force * (p.mouseY - p.pmouseY);
+                    dens[i][j] = source;
+                }
+            }
+            
+            p.mousePressed = () => {
+                // Change color palette on click
+                currentPalette = (currentPalette + 1) % colorPalettes.length;
+            };
+            
+            p.keyPressed = () => {
+                // Reset simulation on 'r'
+                if (p.key === 'r' || p.key === 'R') {
+                    for (let i = 0; i < N + 2; i++) {
+                        for (let j = 0; j < N + 2; j++) {
+                            u[i][j] = v[i][j] = u_prev[i][j] = v_prev[i][j] = 0;
+                            dens[i][j] = dens_prev[i][j] = 0;
+                        }
+                    }
+                }
+                // Toggle vectors on 'v'
+                if (p.key === 'v' || p.key === 'V') {
+                    showVectors = !showVectors;
+                }
+                // Toggle density on 'd'
+                if (p.key === 'd' || p.key === 'D') {
+                    showDensity = !showDensity;
+                }
+                // Toggle color mode on 'c'
+                if (p.key === 'c' || p.key === 'C') {
+                    colorMode = (colorMode + 1) % 2;
+                }
+            };
+            
+            p.windowResized = () => {
+                size = Math.min(p.windowWidth, p.windowHeight) * 0.8;
+                size = Math.min(size, 1000);
+                p.resizeCanvas(size, size);
+            };
+        };
+        
+        new p5(fluidSim);
+    </script>
+</body>
+</html>
